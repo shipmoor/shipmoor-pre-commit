@@ -125,6 +125,18 @@ bats tests/                 # offline, deterministic (no network, no real CLI)
 The test suite stubs both the installer and the CLI, so it never touches the
 network or installs the real binary. See [`tests/`](tests/).
 
+### Releasing
+
+1. Move the changes from `## [Unreleased]` into a dated section in
+   [`CHANGELOG.md`](CHANGELOG.md): `## [vX.Y.Z] - YYYY-MM-DD`.
+2. Commit, then tag and push:
+   ```bash
+   git tag -a vX.Y.Z -m vX.Y.Z && git push origin main vX.Y.Z
+   ```
+3. The [`release`](.github/workflows/release.yml) workflow publishes a GitHub
+   release whose notes are the matching `CHANGELOG.md` section. Tags with a
+   `-` suffix (e.g. `v1.0.0-rc.1`) are marked as pre-releases automatically.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The Shipmoor CLI it installs has its own license

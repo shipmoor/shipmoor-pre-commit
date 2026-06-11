@@ -1,0 +1,71 @@
+name: release
+
+# Publish a GitHub release whenever a v* tag is pushed. The release notes are
+# extracted from the matching section of CHANGELOG.md, so the flow is:
+#   1. date the CHANGELOG section (## [vX.Y.Z] - YYYY-MM-DD)
+#   2. git tag -a vX.Y.Z && git push origin vX.Y.Z
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish a release for, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the tag
+        id: tag
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="${GITHUB_REF#refs/tags/}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag '$tag' does not start with 'v'"; exit 1 ;;
+          esac
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+
+      - name: Extract the changelog section
+        id: notes
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          notes_file="$RUNNER_TEMP/notes.md"
+          # Pull the body under "## [<tag>]" up to (but not including) the next "## ".
+          awk -v tag="$tag" '
+            $0 ~ "^## \\[" tag "\\]" { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md >"$notes_file"
+          # Trim leading/trailing blank lines.
+          sed -i -e '/./,$!d' "$notes_file"
+          if [ ! -s "$notes_file" ]; then
+            echo "::error::no CHANGELOG.md section found for $tag (expected a '## [$tag]' heading)"
+            exit 1
+          fi
+          echo "notes_file=$notes_file" >>"$GITHUB_OUTPUT"
+          echo "----- release notes for $tag -----"
+          cat "$notes_file"
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          notes_file="${{ steps.notes.outputs.notes_file }}"
+          prerelease=""
+          case "$tag" in
+            *-*) prerelease="--prerelease" ;;  # v1.2.0-rc.1, etc.
+          esac
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$tag" --notes-file "$notes_file" $prerelease
+          else
+            gh release create "$tag" --title "$tag" --notes-file "$notes_file" $prerelease
+          fi
