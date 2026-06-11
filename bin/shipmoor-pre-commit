@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+#
+# Shipmoor pre-commit hook wrapper.
+#
+# Ensures the local `shipmoor` CLI is installed — the latest stable build by
+# default, or a pinned version — then runs `shipmoor scan` against the staged
+# change. Everything Shipmoor does is local: no source leaves the machine.
+#
+# Version selection (highest precedence first):
+#   1. --shipmoor-version=X  (passed through the hook's `args:` in .pre-commit-config.yaml)
+#   2. $SHIPMOOR_VERSION      (environment)
+#   3. latest stable          (default)
+#
+# Channel selection mirrors that with --shipmoor-channel=X / $SHIPMOOR_CHANNEL
+# (default: stable).
+#
+# Any argument that is NOT one of our own --shipmoor-* options is forwarded
+# verbatim to `shipmoor scan`. If no scan scope is supplied we default to
+# `--staged`, so the hook only inspects what is about to be committed.
+#
+# Honoured environment variables:
+#   SHIPMOOR_VERSION              Pin the CLI version (e.g. 0.4.0). Empty = latest.
+#   SHIPMOOR_CHANNEL              Release channel (default: stable).
+#   SHIPMOOR_PRE_COMMIT_HOME      Cache root (default: ${XDG_CACHE_HOME:-~/.cache}/shipmoor-pre-commit).
+#   SHIPMOOR_PRE_COMMIT_REFRESH   "1" re-fetches the latest build even if one is cached.
+#   SHIPMOOR_PRE_COMMIT_USE_SYSTEM "1" uses a `shipmoor` already on PATH when no version is pinned.
+#   SHIPMOOR_INSTALL_URL          Override the installer URL (default: https://dl.shipmoor.dev/install.sh).
+#
+set -euo pipefail
+
+readonly INSTALL_URL_DEFAULT="https://dl.shipmoor.dev/install.sh"
+
+log() { printf 'shipmoor-pre-commit: %s\n' "$*" >&2; }
+die() {
+  log "$*"
+  exit 1
+}
+
+# --- parse our own options out of the argument list ------------------------
+#
+# We extract our --shipmoor-* options and forward everything else to
+# `shipmoor scan`. The one subtlety: a bare token might be a scan *target*
+# (which sets the scope) or merely the *value* of a preceding space-separated
+# option (e.g. the `high` in `--fail-on high`, which must NOT count as scope).
+# `prev_takes_value` tracks that so option-values are never mistaken for a target.
+version="${SHIPMOOR_VERSION:-}"
+channel="${SHIPMOOR_CHANNEL:-stable}"
+scan_args=()
+has_scope=0
+prev_takes_value=0
+
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a="${args[$i]}"
+
+  # Our own options are consumed here and never forwarded to scan.
+  case "$a" in
+    --shipmoor-version)
+      version="${args[$((i + 1))]:-}"
+      i=$((i + 2))
+      prev_takes_value=0
+      continue
+      ;;
+    --shipmoor-version=*)
+      version="${a#*=}"
+      i=$((i + 1))
+      prev_takes_value=0
+      continue
+      ;;
+    --shipmoor-channel)
+      channel="${args[$((i + 1))]:-}"
+      i=$((i + 2))
+      prev_takes_value=0
+      continue
+      ;;
+    --shipmoor-channel=*)
+      channel="${a#*=}"
+      i=$((i + 1))
+      prev_takes_value=0
+      continue
+      ;;
+  esac
+
+  if [ "$prev_takes_value" -eq 1 ]; then
+    # This token is the value for the previous space-separated option.
+    scan_args+=("$a")
+    prev_takes_value=0
+    i=$((i + 1))
+    continue
+  fi
+
+  case "$a" in
+    --staged | --changed)
+      has_scope=1
+      ;;
+    --diff | --patch | --session)
+      # Scope flag that also takes a value (e.g. --diff main...HEAD).
+      has_scope=1
+      prev_takes_value=1
+      ;;
+    --diff=* | --patch=* | --session=*)
+      has_scope=1
+      ;;
+    --config | --output | --fail-on | --intent | --prompt | --verdict-policy | \
+      --agent | --judge-role | --author-model-id | --markdown-summary)
+      # Non-scope options whose value arrives as the next token.
+      prev_takes_value=1
+      ;;
+    -*)
+      # Any other flag (boolean, or =-form value option): forward as-is.
+      :
+      ;;
+    *)
+      # A bare positional with no pending value is a scan target.
+      has_scope=1
+      ;;
+  esac
+  scan_args+=("$a")
+  i=$((i + 1))
+done
+
+# Normalise: a leading "v" on a pinned version is tolerated (v0.4.0 -> 0.4.0)
+# so the value lines up with the dl.shipmoor.dev channel layout.
+version="${version#v}"
+
+# Default the scan scope to the staged change when the caller gave none.
+if [ "$has_scope" -eq 0 ]; then
+  scan_args=(--staged ${scan_args[@]+"${scan_args[@]}"})
+fi
+
+# --- locate or install the CLI ---------------------------------------------
+resolve_binary() {
+  # Opt-in: reuse a shipmoor already on PATH, but only when nothing is pinned
+  # (a pin must be honoured exactly, so we never trust an ambient binary for it).
+  if [ "${SHIPMOOR_PRE_COMMIT_USE_SYSTEM:-0}" = "1" ] && [ -z "$version" ] &&
+    command -v shipmoor >/dev/null 2>&1; then
+    bin="$(command -v shipmoor)"
+    log "using system shipmoor at $bin"
+    return 0
+  fi
+
+  local cache_root verkey root
+  cache_root="${SHIPMOOR_PRE_COMMIT_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/shipmoor-pre-commit}"
+  verkey="${version:-latest}"
+  root="$cache_root/$verkey/$channel"
+  bindir="$root/bin"
+  libdir="$root/lib/shipmoor"
+  bin="$bindir/shipmoor"
+
+  if cache_is_fresh; then
+    return 0
+  fi
+
+  if install_cli; then
+    [ -x "$bin" ] || die "installer reported success but $bin is missing"
+    return 0
+  fi
+
+  # Install failed (offline? transient?). Fall back to a cached copy if we have one.
+  if [ -x "$bin" ]; then
+    log "install failed; falling back to cached shipmoor at $bin"
+    return 0
+  fi
+  die "could not install shipmoor (network?) and no cached binary at $bin"
+}
+
+cache_is_fresh() {
+  [ -x "$bin" ] || return 1
+  if [ -n "$version" ]; then
+    # Pinned: reuse only if the cached binary really is that version.
+    "$bin" version 2>/dev/null | grep -qw -- "$version"
+    return $?
+  fi
+  # Latest: reuse the cached build unless an explicit refresh was requested,
+  # so a `shipmoor scan` does not hit the network on every single commit.
+  [ "${SHIPMOOR_PRE_COMMIT_REFRESH:-0}" != "1" ]
+}
+
+install_cli() {
+  local url script rc
+  url="${SHIPMOOR_INSTALL_URL:-$INSTALL_URL_DEFAULT}"
+  log "installing shipmoor ${version:-latest} [$channel] -> $bindir"
+  script="$(mktemp)"
+  if ! curl -fsSL "$url" -o "$script"; then
+    rm -f "$script"
+    return 1
+  fi
+  set +e
+  SHIPMOOR_VERSION="$version" \
+    SHIPMOOR_CHANNEL="$channel" \
+    SHIPMOOR_INSTALL_DIR="$bindir" \
+    SHIPMOOR_LIB_DIR="$libdir" \
+    SHIPMOOR_NO_PATH_HINT=1 \
+    bash "$script"
+  rc=$?
+  set -e
+  rm -f "$script"
+  return "$rc"
+}
+
+bin=""
+resolve_binary
+
+# --- run the scan ----------------------------------------------------------
+exec "$bin" scan ${scan_args[@]+"${scan_args[@]}"}

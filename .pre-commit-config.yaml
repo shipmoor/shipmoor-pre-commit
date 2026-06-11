@@ -1,0 +1,26 @@
+# Hooks for developing THIS repo. The `shipmoor-scan` dogfood is a `repo: local`
+# entry so it runs against the in-tree wrapper (it will install the real CLI on
+# first run). CI does not depend on it — CI runs shellcheck + bats directly.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-executables-have-shebangs
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: local
+    hooks:
+      - id: shipmoor-scan
+        name: shipmoor scan (local dogfood)
+        entry: bin/shipmoor-pre-commit
+        language: script
+        pass_filenames: false
+        require_serial: true
+        args: [--fail-on, high]

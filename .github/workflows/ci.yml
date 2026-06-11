@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck the wrapper
+        run: shellcheck bin/shipmoor-pre-commit
+      - name: Validate the pre-commit manifest
+        run: |
+          python -m pip install --upgrade pre-commit
+          pre-commit validate-manifest .pre-commit-hooks.yaml
+          pre-commit validate-config .pre-commit-config.yaml
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bats
+        uses: bats-core/bats-action@3.0.1
+      - name: Run the (offline) wrapper tests
+        run: bats tests/

@@ -1,0 +1,43 @@
+# Shipmoor hooks for the pre-commit framework (https://pre-commit.com).
+#
+# The wrapper installs the local `shipmoor` CLI (latest by default, or a pinned
+# version via `--shipmoor-version=X`) and runs it against the staged change.
+# Nothing leaves the machine.
+
+- id: shipmoor-scan
+  name: shipmoor scan (staged)
+  description: >-
+    Scan the staged change for code-integrity findings — hallucinated
+    dependencies, placeholder/stub code, and quality regressions — with the
+    local Shipmoor CLI. Free, no login.
+  entry: bin/shipmoor-pre-commit
+  language: script
+  pass_filenames: false
+  require_serial: true
+  args: [--fail-on, high]
+  minimum_pre_commit_version: "2.9.0"
+
+- id: shipmoor-scan-changed
+  name: shipmoor scan (changed)
+  description: >-
+    Like shipmoor-scan, but scans staged AND unstaged Git changes.
+  entry: bin/shipmoor-pre-commit
+  language: script
+  pass_filenames: false
+  require_serial: true
+  args: [--changed, --fail-on, high]
+  minimum_pre_commit_version: "2.9.0"
+
+- id: shipmoor-intent
+  name: shipmoor intent claim-check (Pro)
+  description: >-
+    Run the Pro Intent-Drift claim check on the staged change — does the diff
+    actually do what it was asked to? Requires a licensed Shipmoor CLI and an
+    intent source, supplied via args (e.g. --prompt, --session PATH) or a
+    .shipmoor/intent.txt file.
+  entry: bin/shipmoor-pre-commit
+  language: script
+  pass_filenames: false
+  require_serial: true
+  args: [--staged]
+  minimum_pre_commit_version: "2.9.0"
