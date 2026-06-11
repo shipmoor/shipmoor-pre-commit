@@ -3,7 +3,7 @@
 All notable changes to the Shipmoor pre-commit hooks are documented here. The
 `rev:` a consumer pins in `.pre-commit-config.yaml` is a tag from this repo.
 
-## [Unreleased]
+## [v0.1.0] - 2026-06-11
 
 ### Added
 - Initial release of the `shipmoor/shipmoor-pre-commit` hook repo.
